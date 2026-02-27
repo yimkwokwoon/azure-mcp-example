@@ -1,0 +1,51 @@
+scp -r "C:\Users\kwokwoonyim\OneDrive - Microsoft\Desktop\Projects\azure-api" jack@20.255.50.93:~   
+
+
+chmod u+w /home/jack/azure-api
+
+sudo apt update
+sudo apt install -y python3.12-venv
+
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+pip install -r mcp-remote-poc/requirements.txt
+
+sudo tee /etc/systemd/system/mcp-poc.service > /dev/null <<'EOF'
+[Unit]
+Description=MCP POC Ser ver
+After=network.target
+
+[Service]
+Type=simple
+User=jack
+WorkingDirectory=/home/jack/AZURE-API
+Environment=HOST=0.0.0.0
+Environment=PORT=8080
+Environment=MCP_TRANSPORT=streamable_http
+Environment=MCP_ALLOWED_HOSTS=*
+Environment=MCP_ALLOW_ALL_HOSTS=1
+ExecStart=/home/jack/AZURE-API/.venv/bin/python /home/jack/AZURE-API/mcp-remote-poc/mcp-poc.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now mcp-poc
+sudo systemctl status mcp-poc
+journalctl -u mcp-poc -f
+
+
+-----------------
+# parse JSON
+$sp = Get-Content sp.json | ConvertFrom-Json
+
+# display (do not paste these publicly)
+$sp.clientId
+$sp.clientSecret
+$sp.tenantId
+$sp.subscriptionId

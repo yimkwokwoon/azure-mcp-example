@@ -1,0 +1,9 @@
+# Caddy reverse proxy for MCP (streamable HTTP)
+# Replace <PUBLIC_IP> with your public IP or domain.
+http://165.84.140.76 {
+    # Foundry/APIM hits root; rewrite to /mcp on the backend.
+    reverse_proxy 127.0.0.1:8080 {
+        header_up Host 127.0.0.1:8080
+        rewrite * /mcp
+    }
+}
