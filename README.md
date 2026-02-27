@@ -2,10 +2,9 @@
 
 ## Overview
 
-This project has two parts:
+This is an MCP (Model Context Protocol) server that exposes Azure VM management operations as tools for AI agents (e.g., Foundry, Copilot, Claude).
 
-1. **`src/azure_rest.py`** — Lightweight Python helpers that call Azure Resource Manager (ARM) REST APIs directly using `requests` (no Azure SDK).
-2. **`mcp-remote-poc/mcp-poc.py`** — An MCP (Model Context Protocol) server that exposes those Azure helpers as tools for AI agents (e.g., Foundry, Copilot, Claude).
+It calls **Azure Resource Manager (ARM) REST APIs** directly using `requests` (no Azure SDK), so you can see exactly what's being sent to Azure.
 
 Architecture:
 ```
@@ -20,19 +19,28 @@ Agent → MCP tool call → mcp-poc.py → azure_client.py → azure_rest_formcp
 azure-api/
 ├── README.md                          # This file
 ├── requirements.txt                   # Root deps (requests, python-dotenv, pytest)
-├── src/
-│   ├── .env                           # Azure credentials for the REST module
-│   ├── azure_rest.py                  # REST helpers + built-in test runner
-│   └── azure_rest_formcp.py           # Copy of REST helpers used by MCP server
 ├── mcp-remote-poc/
-│   ├── .env                           # Azure credentials for the MCP server
+│   ├── .env                           # Azure credentials (DO NOT COMMIT)
 │   ├── mcp-poc.py                     # MCP server entrypoint
 │   ├── azure_client.py                # Credentials wrapper (loads .env)
-│   ├── azure_rest_formcp.py           # Copy of REST helpers (local import)
+│   ├── azure_rest_formcp.py           # Azure ARM REST helper functions
 │   ├── requirements.txt               # MCP server deps (mcp, uvicorn, requests, python-dotenv)
 │   ├── startup.txt                    # Quick-start command
 │   └── deploy/                        # Deployment configs (Caddy, nginx, App Service)
 ```
+
+---
+
+## Azure API Versions
+
+All Azure REST API calls use the latest stable versions:
+
+| Resource Type | API Version |
+|---|---|
+| Microsoft.Compute (VMs) | `2024-11-01` |
+| Microsoft.Network (IP, VNet, NIC) | `2024-05-01` |
+| Microsoft.Resources (Deployments) | `2024-07-01` |
+| VM Image | Ubuntu 24.04 LTS (`ubuntu-24_04-lts`) |
 
 ---
 
@@ -65,7 +73,7 @@ Flow:
 
 ```bash
 cd ~
-git clone <your-repo-url> azure-api
+git clone https://github.com/yimkwokwoon/azure-mcp-example.git azure-api
 cd azure-api
 ```
 
@@ -80,17 +88,8 @@ pip install -r mcp-remote-poc/requirements.txt
 
 ### Step 3: Configure credentials
 
-Create `.env` files with your Azure credentials:
+Create `mcp-remote-poc/.env` with your Azure credentials:
 
-**For the REST module** (`src/.env`):
-```dotenv
-AZ_TENANT_ID="00000000-0000-0000-0000-000000000000"
-AZ_CLIENT_ID="00000000-0000-0000-0000-000000000000"
-AZ_CLIENT_SECRET="YOUR_SECRET_VALUE"
-AZ_SUBSCRIPTION_ID="00000000-0000-0000-0000-000000000000"
-```
-
-**For the MCP server** (`mcp-remote-poc/.env`):
 ```dotenv
 AZ_TENANT_ID="00000000-0000-0000-0000-000000000000"
 AZ_CLIENT_ID="00000000-0000-0000-0000-000000000000"
@@ -106,22 +105,7 @@ AZ_TEST_PASS="YourPassword123!"
 
 > **Security:** Never commit `.env` to git. Never share your client secret.
 
-### Step 4a: Run the REST module test runner (standalone)
-
-```bash
-cd ~/azure-api
-source .venv/bin/activate
-python3 src/azure_rest.py
-```
-
-This will:
-- Load `src/.env`
-- Acquire an OAuth token
-- List all VMs in your subscription
-- Get instance view / power state for the first VM
-- Optionally run deployment tests (if `AZ_RUN_DEPLOY=true`)
-
-### Step 4b: Run the MCP server (interactive / foreground)
+### Step 4: Run the MCP server (interactive / foreground)
 
 ```bash
 cd ~/azure-api/mcp-remote-poc
@@ -133,6 +117,7 @@ HOST=0.0.0.0 PORT=8080 MCP_TRANSPORT=streamable_http python3 mcp-poc.py
 Expected output:
 ```
 demo-mcp-server - INFO - Starting MCP Server on 0.0.0.0:8080 (transport=streamable_http)...
+demo-mcp-server - INFO - Serving streamable HTTP endpoint at /mcp
 INFO:     Uvicorn running on http://0.0.0.0:8080
 ```
 
@@ -222,7 +207,7 @@ On Azure (if hosted on an Azure VM):
 
 ---
 
-## REST Helper Functions (`src/azure_rest.py`)
+## REST Helper Functions (`mcp-remote-poc/azure_rest_formcp.py`)
 
 | Function | Description |
 |---|---|
@@ -231,30 +216,13 @@ On Azure (if hosted on an Azure VM):
 | `get_vm_instance_view(subscription_id, rg, vm_name, token)` | VM instance view (statuses + power state) |
 | `get_vm_power_state(instance_view)` | Parse power state → `"running"` / `"stopped"` |
 | `deploy_template(subscription_id, rg, deployment_name, token, template, parameters)` | Create/update ARM deployment |
-| `build_basic_vm_template(vm_name, location, ...)` | Generate a minimal ARM template for a Ubuntu VM |
+| `build_basic_vm_template(vm_name, location, ...)` | Generate a minimal ARM template for an Ubuntu VM |
 | `create_or_update_vm(subscription_id, rg, vm_name, token, nic_id, ...)` | Direct VM PUT (Compute API) |
 | `create_public_ip(subscription_id, rg, name, token)` | Create a public IP address |
 | `create_vnet_with_subnet(subscription_id, rg, vnet_name, subnet_name, token)` | Create VNet + subnet |
 | `create_nic(subscription_id, rg, nic_name, token, subnet_id, ...)` | Create a network interface |
 | `delete_deployment(subscription_id, rg, deployment_name, token)` | Delete a deployment record |
 | `delete_vm(subscription_id, rg, vm_name, token, force_deletion=True)` | Delete VM with async polling |
-
-### Usage example
-
-```python
-from src.azure_rest import get_access_token, list_vms
-import os
-
-token = get_access_token(
-    os.environ["AZ_TENANT_ID"],
-    os.environ["AZ_CLIENT_ID"],
-    os.environ["AZ_CLIENT_SECRET"],
-)
-
-resp = list_vms(os.environ["AZ_SUBSCRIPTION_ID"], token, resource_group="my-rg")
-for vm in resp.get("value", []):
-    print(vm["name"], vm.get("location"))
-```
 
 ---
 
@@ -312,6 +280,10 @@ for vm in resp.get("value", []):
 - Wrong subscription ID or resource group name
 - No VMs exist in the queried scope
 
+### Port already in use
+- Another instance is still running
+- Fix: `kill $(pgrep -f mcp-poc.py)` or `sudo systemctl stop mcp-poc`
+
 ### Server works locally but not remotely
 - Bound to `127.0.0.1` instead of `0.0.0.0` → set `HOST=0.0.0.0`
 - Linux firewall (`ufw`) or Azure NSG blocking port 8080
@@ -330,7 +302,7 @@ for vm in resp.get("value", []):
 
 ## Extending: Add a New Azure API as an MCP Tool
 
-1. Add a REST helper in `azure_rest_formcp.py` (and copy to `mcp-remote-poc/azure_rest_formcp.py`):
+1. Add a REST helper in `mcp-remote-poc/azure_rest_formcp.py`:
    ```python
    def my_new_api(subscription_id, token, ...) -> dict:
        url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/..."
@@ -339,7 +311,7 @@ for vm in resp.get("value", []):
        return r.json()
    ```
 
-2. Add an MCP tool wrapper in `mcp-poc.py`:
+2. Add an MCP tool wrapper in `mcp-remote-poc/mcp-poc.py`:
    ```python
    @mcp.tool()
    def my_new_tool(resource_group: str) -> str:

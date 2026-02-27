@@ -88,7 +88,7 @@ def deploy_template(subscription_id: str, resource_group: str, deployment_name: 
 
     Returns the deployment operation response JSON.
     """
-    url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourcegroups/{resource_group}/providers/Microsoft.Resources/deployments/{deployment_name}?api-version=2021-04-01"
+    url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourcegroups/{resource_group}/providers/Microsoft.Resources/deployments/{deployment_name}?api-version=2024-07-01"
     body = {"properties": {"mode": mode, "template": template, "parameters": parameters or {}}}
     r = requests.put(url, headers=_headers(token), json=body)
     try:
@@ -119,14 +119,14 @@ def build_basic_vm_template(vm_name: str, location: str = "eastasia", admin_user
         "resources": [
             {
                 "type": "Microsoft.Network/publicIPAddresses",
-                "apiVersion": "2021-02-01",
+                "apiVersion": "2024-05-01",
                 "name": "[variables('publicIpName')]",
                 "location": location,
                 "properties": {"publicIPAllocationMethod": "Dynamic"}
             },
             {
                 "type": "Microsoft.Network/networkInterfaces",
-                "apiVersion": "2021-02-01",
+                "apiVersion": "2024-05-01",
                 "name": "[variables('nicName')]",
                 "location": location,
                 "dependsOn": ["[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName'))]"],
@@ -145,7 +145,7 @@ def build_basic_vm_template(vm_name: str, location: str = "eastasia", admin_user
             },
             {
                 "type": "Microsoft.Compute/virtualMachines",
-                "apiVersion": "2021-07-01",
+                "apiVersion": "2024-11-01",
                 "name": "[variables('vmName')]",
                 "location": location,
                 "dependsOn": ["[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]"],
@@ -159,7 +159,7 @@ def build_basic_vm_template(vm_name: str, location: str = "eastasia", admin_user
                     },
                     "networkProfile": {"networkInterfaces": [{"id": "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]"}]},
                     "storageProfile": {
-                        "imageReference": {"publisher": "Canonical", "offer": "UbuntuServer", "sku": "18.04-LTS", "version": "latest"},
+                        "imageReference": {"publisher": "Canonical", "offer": "ubuntu-24_04-lts", "sku": "server", "version": "latest"},
                         "osDisk": {"createOption": "FromImage"}
                     }
                 }
@@ -182,7 +182,7 @@ def create_or_update_vm(
     admin_password: str = "Jackyim1997!",
     image_reference: Optional[Dict[str, str]] = None,
     os_disk_name: Optional[str] = None,
-    api_version: str = "2025-04-01",
+    api_version: str = "2024-11-01",
 ) -> Dict[str, Any]:
     """Create or update a VM by calling the Compute "Create Or Update" REST API (PUT).
 
@@ -192,7 +192,7 @@ def create_or_update_vm(
     if not nic_id:
         raise ValueError("nic_id is required to create a VM with this helper")
 
-    image_reference = image_reference or {"publisher": "Canonical", "offer": "UbuntuServer", "sku": "18.04-LTS", "version": "latest"}
+    image_reference = image_reference or {"publisher": "Canonical", "offer": "ubuntu-24_04-lts", "sku": "server", "version": "latest"}
     os_disk_name = os_disk_name or f"{vm_name}-osdisk"
 
     url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Compute/virtualMachines/{vm_name}?api-version={api_version}"
@@ -228,7 +228,7 @@ def create_or_update_vm(
     return r.json()
 
 
-def create_public_ip(subscription_id: str, resource_group: str, name: str, token: str, location: str = "eastasia", api_version: str = "2021-02-01") -> str:
+def create_public_ip(subscription_id: str, resource_group: str, name: str, token: str, location: str = "eastasia", api_version: str = "2024-05-01") -> str:
     url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Network/publicIPAddresses/{name}?api-version={api_version}"
     body = {"location": location, "properties": {"publicIPAllocationMethod": "Dynamic"}}
 
@@ -268,7 +268,7 @@ def create_public_ip(subscription_id: str, resource_group: str, name: str, token
     return j.get("id") or f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Network/publicIPAddresses/{name}"
 
 
-def create_vnet_with_subnet(subscription_id: str, resource_group: str, vnet_name: str, subnet_name: str, token: str, location: str = "eastasia", api_version: str = "2021-02-01") -> str:
+def create_vnet_with_subnet(subscription_id: str, resource_group: str, vnet_name: str, subnet_name: str, token: str, location: str = "eastasia", api_version: str = "2024-05-01") -> str:
     url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Network/virtualNetworks/{vnet_name}?api-version={api_version}"
     body = {
         "location": location,
@@ -283,7 +283,7 @@ def create_vnet_with_subnet(subscription_id: str, resource_group: str, vnet_name
     return f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Network/virtualNetworks/{vnet_name}/subnets/{subnet_name}"
 
 
-def create_nic(subscription_id: str, resource_group: str, nic_name: str, token: str, subnet_id: str, public_ip_id: Optional[str] = None, location: str = "eastasia", api_version: str = "2021-02-01") -> str:
+def create_nic(subscription_id: str, resource_group: str, nic_name: str, token: str, subnet_id: str, public_ip_id: Optional[str] = None, location: str = "eastasia", api_version: str = "2024-05-01") -> str:
     url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Network/networkInterfaces/{nic_name}?api-version={api_version}"
     ip_conf = {"name": "ipconfig1", "properties": {"subnet": {"id": subnet_id}, "privateIPAllocationMethod": "Dynamic"}}
     if public_ip_id:
@@ -303,7 +303,7 @@ def create_nic(subscription_id: str, resource_group: str, nic_name: str, token: 
 
 
 def delete_deployment(subscription_id: str, resource_group: str, deployment_name: str, token: str) -> None:
-    url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourcegroups/{resource_group}/providers/Microsoft.Resources/deployments/{deployment_name}?api-version=2021-04-01"
+    url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourcegroups/{resource_group}/providers/Microsoft.Resources/deployments/{deployment_name}?api-version=2024-07-01"
     r = requests.delete(url, headers=_headers(token))
     try:
         r.raise_for_status()
@@ -315,7 +315,7 @@ def delete_deployment(subscription_id: str, resource_group: str, deployment_name
         raise
 
 
-def delete_vm(subscription_id: str, resource_group: str, vm_name: str, token: str, force_deletion: bool = True, api_version: str = "2025-04-01", timeout: int = 300, poll_interval: int = 5) -> Optional[Dict[str, Any]]:
+def delete_vm(subscription_id: str, resource_group: str, vm_name: str, token: str, force_deletion: bool = True, api_version: str = "2024-11-01", timeout: int = 300, poll_interval: int = 5) -> Optional[Dict[str, Any]]:
     """Delete a virtual machine using the Compute Delete REST API.
 
     If `force_deletion` is True the query `forceDeletion=true` will be appended.
@@ -497,12 +497,12 @@ if __name__ == "__main__":
                 if nic_id:
                     # nic_id may be a full resource id starting with '/subscriptions' or a URL
                     if nic_id.startswith("/"):
-                        nic_url = MANAGEMENT_ENDPOINT + nic_id + "?api-version=2021-02-01"
+                        nic_url = MANAGEMENT_ENDPOINT + nic_id + "?api-version=2024-05-01"
                     elif nic_id.lower().startswith("http"):
-                        nic_url = nic_id if "?" in nic_id else nic_id + "?api-version=2021-02-01"
+                        nic_url = nic_id if "?" in nic_id else nic_id + "?api-version=2024-05-01"
                     else:
                         # assume name only in the target resource group
-                        nic_url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourceGroups/{rg}/providers/Microsoft.Network/networkInterfaces/{nic_id}?api-version=2021-02-01"
+                        nic_url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourceGroups/{rg}/providers/Microsoft.Network/networkInterfaces/{nic_id}?api-version=2024-05-01"
                     try:
                         nr = requests.get(nic_url, headers=_headers(token))
                         if nr.status_code != 200:
@@ -513,7 +513,7 @@ if __name__ == "__main__":
                         nic_id = None
                 vm_name = default_vm_name
                 if not creation_skipped and nic_id:
-                    print(f"[4/4] Creating VM {vm_name} in {rg} via Compute PUT using NIC {nic_id} (api-version=2025-04-01)")
+                    print(f"[4/4] Creating VM {vm_name} in {rg} via Compute PUT using NIC {nic_id} (api-version=2024-11-01)")
                     try:
                         vm_resp = create_or_update_vm(
                             subscription_id=subscription_id,
@@ -543,7 +543,7 @@ if __name__ == "__main__":
                 print(f"[4/4] No NIC provided; creating Public IP, VNet (if needed), and NIC in {rg}")
                 try:
                     # Ensure vnet/subnet exists (create if not)
-                    vnet_url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourceGroups/{rg}/providers/Microsoft.Network/virtualNetworks/{vnet_name}?api-version=2021-02-01"
+                    vnet_url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourceGroups/{rg}/providers/Microsoft.Network/virtualNetworks/{vnet_name}?api-version=2024-05-01"
                     vnet_exists = False
                     try:
                         vresp = requests.get(vnet_url, headers=_headers(token))
@@ -580,13 +580,13 @@ if __name__ == "__main__":
                             "resources": [
                                 {
                                     "type": "Microsoft.Compute/virtualMachines",
-                                    "apiVersion": "2025-04-01",
+                                    "apiVersion": "2024-11-01",
                                     "name": vm_name,
                                     "location": location,
                                     "properties": {
                                         "hardwareProfile": {"vmSize": os.environ.get("AZ_TEST_VM_SIZE", "Standard_D2as_v5")},
                                         "storageProfile": {
-                                            "imageReference": {"publisher": "Canonical", "offer": "UbuntuServer", "sku": "18.04-LTS", "version": "latest"},
+                                            "imageReference": {"publisher": "Canonical", "offer": "ubuntu-24_04-lts", "sku": "server", "version": "latest"},
                                             "osDisk": {"createOption": "FromImage", "name": f"{vm_name}-osdisk", "caching": "ReadWrite", "managedDisk": {"storageAccountType": "Premium_LRS"}}
                                         },
                                         "osProfile": {
@@ -607,7 +607,7 @@ if __name__ == "__main__":
                         print(json.dumps(deploy_res, indent=2))
 
                         # poll deployment until terminal state (reuse earlier polling logic)
-                        url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourcegroups/{rg}/providers/Microsoft.Resources/deployments/{deployment_name}?api-version=2021-04-01"
+                        url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourcegroups/{rg}/providers/Microsoft.Resources/deployments/{deployment_name}?api-version=2024-07-01"
                         terminal_states = ("Succeeded", "Failed", "Canceled")
                         timeout = 900
                         print("  - polling deployment until terminal state (timeout %ds)..." % timeout)
@@ -636,7 +636,7 @@ if __name__ == "__main__":
                             if final_state != "Succeeded":
                                 # construct operations URL correctly (avoid appending to an existing query string)
                                 base_deploy_url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourceGroups/{rg}/providers/Microsoft.Resources/deployments/{deployment_name}"
-                                ops_url = f"{base_deploy_url}/operations?api-version=2021-04-01"
+                                ops_url = f"{base_deploy_url}/operations?api-version=2024-07-01"
                                 try:
                                     ops_r = requests.get(ops_url, headers=_headers(token))
                                     ops_r.raise_for_status()
