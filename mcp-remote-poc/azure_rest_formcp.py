@@ -10,8 +10,16 @@ Provides:
 - deploy_template: create/update a Resource Manager deployment (use to create VM via template)
 - delete_deployment: remove a deployment
 
+Discovery helpers (read-only):
+- list_locations: list Azure regions for the subscription
+- list_vm_sizes: list available VM sizes in a region
+- list_vm_image_publishers: list OS image publishers in a region
+- list_vm_image_offers: list image offers for a publisher
+- list_vm_image_skus: list image SKUs for a publisher/offer
+
 Usage: see examples.py and README.md
-"""
+"""  
+from typing import List
 from typing import Optional, Dict, Any
 import requests
 import os
@@ -78,6 +86,70 @@ def get_vm_power_state(instance_view: Dict[str, Any]) -> Optional[str]:
         if code.startswith("PowerState/"):
             return code.split("/", 1)[1]
     return None
+
+
+# ---------------------------------------------------------------------------
+# Discovery helpers (read-only GET calls)
+# ---------------------------------------------------------------------------
+
+def list_locations(subscription_id: str, token: str, api_version: str = "2024-07-01") -> List[Dict[str, Any]]:
+    """List available Azure regions for the subscription.
+
+    Azure REST: GET /subscriptions/{subscriptionId}/locations
+    Ref: https://learn.microsoft.com/en-us/rest/api/resources/subscriptions/list-locations
+    """
+    url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/locations?api-version={api_version}"
+    r = requests.get(url, headers=_headers(token))
+    r.raise_for_status()
+    return r.json().get("value", [])
+
+
+def list_vm_sizes(subscription_id: str, location: str, token: str, api_version: str = DEFAULT_API_VERSION) -> List[Dict[str, Any]]:
+    """List available VM sizes in a given Azure region.
+
+    Azure REST: GET /subscriptions/{sub}/providers/Microsoft.Compute/locations/{loc}/vmSizes
+    Ref: https://learn.microsoft.com/en-us/rest/api/compute/virtual-machine-sizes/list
+    """
+    url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/providers/Microsoft.Compute/locations/{location}/vmSizes?api-version={api_version}"
+    r = requests.get(url, headers=_headers(token))
+    r.raise_for_status()
+    return r.json().get("value", [])
+
+
+def list_vm_image_publishers(subscription_id: str, location: str, token: str, api_version: str = DEFAULT_API_VERSION) -> List[Dict[str, Any]]:
+    """List VM image publishers available in a region.
+
+    Azure REST: GET .../locations/{loc}/publishers
+    Ref: https://learn.microsoft.com/en-us/rest/api/compute/virtual-machine-images/list-publishers
+    """
+    url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/providers/Microsoft.Compute/locations/{location}/publishers?api-version={api_version}"
+    r = requests.get(url, headers=_headers(token))
+    r.raise_for_status()
+    return r.json()
+
+
+def list_vm_image_offers(subscription_id: str, location: str, publisher: str, token: str, api_version: str = DEFAULT_API_VERSION) -> List[Dict[str, Any]]:
+    """List image offers for a specific publisher in a region.
+
+    Azure REST: GET .../publishers/{pub}/artifacttypes/vmimage/offers
+    Ref: https://learn.microsoft.com/en-us/rest/api/compute/virtual-machine-images/list-offers
+    """
+    url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/providers/Microsoft.Compute/locations/{location}/publishers/{publisher}/artifacttypes/vmimage/offers?api-version={api_version}"
+    r = requests.get(url, headers=_headers(token))
+    r.raise_for_status()
+    return r.json()
+
+
+def list_vm_image_skus(subscription_id: str, location: str, publisher: str, offer: str, token: str, api_version: str = DEFAULT_API_VERSION) -> List[Dict[str, Any]]:
+    """List image SKUs for a specific publisher and offer in a region.
+
+    Azure REST: GET .../publishers/{pub}/artifacttypes/vmimage/offers/{offer}/skus
+    Ref: https://learn.microsoft.com/en-us/rest/api/compute/virtual-machine-images/list-skus
+    """
+    url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/providers/Microsoft.Compute/locations/{location}/publishers/{publisher}/artifacttypes/vmimage/offers/{offer}/skus?api-version={api_version}"
+    r = requests.get(url, headers=_headers(token))
+    r.raise_for_status()
+    return r.json()
 
 
 def deploy_template(subscription_id: str, resource_group: str, deployment_name: str, token: str, template: Dict[str, Any], parameters: Optional[Dict[str, Any]] = None, mode: str = "Incremental") -> Dict[str, Any]:
@@ -182,12 +254,20 @@ def create_or_update_vm(
     admin_password: str = "Jackyim1997!",
     image_reference: Optional[Dict[str, str]] = None,
     os_disk_name: Optional[str] = None,
+    os_disk_type: str = "Premium_LRS",
+    os_disk_size_gb: Optional[int] = None,
+    os_type: str = "linux",
     api_version: str = "2024-11-01",
 ) -> Dict[str, Any]:
     """Create or update a VM by calling the Compute "Create Or Update" REST API (PUT).
 
-    This follows the official sample payload (including linuxConfiguration.patchSettings.patchMode).
+    This follows the official sample payload.
     It requires an existing NIC id (nic_id). Returns the parsed JSON response.
+
+    Parameters:
+        os_disk_type: Managed disk SKU, e.g. Premium_LRS, StandardSSD_LRS, Standard_LRS.
+        os_disk_size_gb: OS disk size in GB. None = Azure default for the image.
+        os_type: "linux" or "windows" — controls the OS configuration section.
     """
     if not nic_id:
         raise ValueError("nic_id is required to create a VM with this helper")
@@ -197,28 +277,42 @@ def create_or_update_vm(
 
     url = f"{MANAGEMENT_ENDPOINT}/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Compute/virtualMachines/{vm_name}?api-version={api_version}"
 
+    # Build osDisk section
+    os_disk = {
+        "caching": "ReadWrite",
+        "managedDisk": {"storageAccountType": os_disk_type},
+        "name": os_disk_name,
+        "createOption": "FromImage",
+    }
+    if os_disk_size_gb is not None:
+        os_disk["diskSizeGB"] = os_disk_size_gb
+
+    # Build osProfile with OS-specific configuration
+    os_profile: Dict[str, Any] = {
+        "adminUsername": admin_username,
+        "computerName": vm_name,
+        "adminPassword": admin_password,
+    }
+    if os_type.lower() == "windows":
+        os_profile["windowsConfiguration"] = {
+            "provisionVMAgent": True,
+            "enableAutomaticUpdates": True,
+        }
+    else:
+        os_profile["linuxConfiguration"] = {
+            "provisionVMAgent": True,
+            "patchSettings": {"patchMode": "ImageDefault"},
+        }
+
     body = {
         "location": location,
         "properties": {
             "hardwareProfile": {"vmSize": vm_size},
             "storageProfile": {
                 "imageReference": image_reference,
-                "osDisk": {
-                    "caching": "ReadWrite",
-                    "managedDisk": {"storageAccountType": "Premium_LRS"},
-                    "name": os_disk_name,
-                    "createOption": "FromImage",
-                },
+                "osDisk": os_disk,
             },
-            "osProfile": {
-                "adminUsername": admin_username,
-                "computerName": vm_name,
-                "adminPassword": admin_password,
-                "linuxConfiguration": {
-                    "provisionVMAgent": True,
-                    "patchSettings": {"patchMode": "ImageDefault"},
-                },
-            },
+            "osProfile": os_profile,
             "networkProfile": {"networkInterfaces": [{"id": nic_id, "properties": {"primary": True}}]},
         },
     }

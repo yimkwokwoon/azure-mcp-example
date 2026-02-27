@@ -109,15 +109,23 @@ def mcp_capabilities() -> str:
     Agents can call this first to learn what tools are available and how to use them.
     """
     caps = {
-        "description": "MCP tools exposing Azure VM inspection helpers",
+        "description": "MCP tools exposing Azure VM management and discovery helpers",
         "tools": {
             "list_vms": "List VMs in a subscription or resource group. Args: resource_group (optional)",
             "list_vms_all": "List all VMs (handles pagination). Args: resource_group (optional)",
             "get_vm_instance_view": "Return VM instanceView JSON. Args: resource_group, vm_name",
             "get_vm_power_state": "Return parsed VM power state (running/stopped). Args: resource_group, vm_name",
             "get_vm_status": "Convenience: returns name, id, location, provisioningState, powerState. Args: resource_group, vm_name",
+            "list_locations": "List Azure regions. Args: filter (optional substring), top (default 30).",
+            "list_vm_sizes": "List VM sizes in a region with filtering. Args: location, filter, min_vcpus, max_vcpus, min_memory_gb, max_memory_gb, top (default 20).",
+            "list_vm_image_publishers": "List OS image publishers. Returns curated common list by default. Args: location, search (optional), top.",
+            "list_vm_image_offers": "List image offers for a publisher. Args: location, publisher, search (optional), top.",
+            "list_vm_image_skus": "List image SKUs. Args: location, publisher, offer, search (optional), top.",
+            "list_disk_types": "List Azure managed disk types with descriptions. No args.",
             "deploy_template": "(Guarded) Deploy an ARM template. Args: resource_group, deployment_name, template_json, parameters_json. Requires AZ_RUN_DEPLOY=true",
-            "delete_deployment": "Delete a deployment record. Args: resource_group, deployment_name"
+            "deploy_vm": "(Guarded) Create a VM with full customization. See tool docstring for all parameters.",
+            "delete_deployment": "Delete a deployment record. Args: resource_group, deployment_name",
+            "delete_vm_tool": "(Guarded) Delete a VM resource. Args: resource_group, vm_name, force"
         }
     }
     return json.dumps(caps)
@@ -194,6 +202,198 @@ def get_vm_status(resource_group: str, vm_name: str) -> str:
     return json.dumps({"error": "VM not found in resource group (or resource_group omitted)"})
 
 
+# ---------------------------------------------------------------------------
+# Discovery tools (read-only — no confirmation needed)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def list_locations(filter: str = None, top: int = 30) -> str:
+    """List available Azure regions for the subscription.
+
+    Args:
+        filter: Optional text to filter region names (case-insensitive substring match).
+                E.g. 'asia', 'us', 'europe'.
+        top: Max results to return (default 30).
+
+    Returns JSON with matched regions and total count.
+    """
+    logger.info(f"Tool called: list_locations(filter={filter}, top={top})")
+    client = _get_client()
+    token = azure_rest.get_access_token(client.tenant_id, client.client_id, client.client_secret)
+    locations = azure_rest.list_locations(client.subscription_id, token)
+    # Simplify to just name and displayName
+    simplified = [{"name": loc.get("name"), "displayName": loc.get("displayName")} for loc in locations]
+    # Apply filter
+    if filter:
+        f = filter.lower()
+        simplified = [l for l in simplified if f in (l.get("name") or "").lower() or f in (l.get("displayName") or "").lower()]
+    total = len(simplified)
+    return json.dumps({"total": total, "showing": min(top, total), "locations": simplified[:top]})
+
+
+@mcp.tool()
+def list_vm_sizes(location: str, filter: str = None, min_vcpus: int = None, max_vcpus: int = None, min_memory_gb: float = None, max_memory_gb: float = None, top: int = 20) -> str:
+    """List available VM sizes in a region with filtering.
+
+    Args:
+        location: Azure region name, e.g. 'eastasia', 'eastus'.
+        filter: Substring match on VM size name (case-insensitive). E.g. 'Standard_D', 'Standard_B'.
+        min_vcpus: Minimum vCPU count.
+        max_vcpus: Maximum vCPU count.
+        min_memory_gb: Minimum memory in GB.
+        max_memory_gb: Maximum memory in GB.
+        top: Max results to return (default 20).
+
+    Returns JSON with matched sizes (name, vCPUs, memoryGB, maxDataDisks) and total count.
+    """
+    logger.info(f"Tool called: list_vm_sizes({location}, filter={filter}, vcpus={min_vcpus}-{max_vcpus}, mem={min_memory_gb}-{max_memory_gb}, top={top})")
+    client = _get_client()
+    token = azure_rest.get_access_token(client.tenant_id, client.client_id, client.client_secret)
+    raw = azure_rest.list_vm_sizes(client.subscription_id, location, token)
+    # Trim to essential fields and convert memory from MB to GB
+    sizes = []
+    for s in raw:
+        name = s.get("name", "")
+        vcpus = s.get("numberOfCores", 0)
+        mem_mb = s.get("memoryInMB", 0)
+        mem_gb = round(mem_mb / 1024, 1)
+        max_disks = s.get("maxDataDiskCount", 0)
+        # Apply filters
+        if filter and filter.lower() not in name.lower():
+            continue
+        if min_vcpus is not None and vcpus < min_vcpus:
+            continue
+        if max_vcpus is not None and vcpus > max_vcpus:
+            continue
+        if min_memory_gb is not None and mem_gb < min_memory_gb:
+            continue
+        if max_memory_gb is not None and mem_gb > max_memory_gb:
+            continue
+        sizes.append({"name": name, "vCPUs": vcpus, "memoryGB": mem_gb, "maxDataDisks": max_disks})
+    total = len(sizes)
+    return json.dumps({"total": total, "showing": min(top, total), "sizes": sizes[:top]})
+
+
+# Well-known publishers so the agent doesn't need to fetch the full 500+ list
+_COMMON_PUBLISHERS = [
+    {"name": "Canonical", "description": "Ubuntu Linux"},
+    {"name": "MicrosoftWindowsServer", "description": "Windows Server"},
+    {"name": "MicrosoftWindowsDesktop", "description": "Windows 10/11 Desktop"},
+    {"name": "RedHat", "description": "Red Hat Enterprise Linux (RHEL)"},
+    {"name": "SUSE", "description": "SUSE Linux Enterprise"},
+    {"name": "Debian", "description": "Debian Linux"},
+    {"name": "Oracle", "description": "Oracle Linux"},
+    {"name": "OpenLogic", "description": "CentOS-based Linux"},
+    {"name": "MicrosoftSQLServer", "description": "SQL Server on Windows/Linux"},
+    {"name": "kinvolk", "description": "Flatcar Container Linux"},
+]
+
+
+@mcp.tool()
+def list_vm_image_publishers(location: str, search: str = None, top: int = 20) -> str:
+    """List VM image publishers available in a region.
+
+    By default returns a curated list of common publishers (Ubuntu, Windows, RHEL, etc.).
+    Use `search` to find a specific publisher by name substring.
+
+    Args:
+        location: Azure region name, e.g. 'eastasia'.
+        search: Optional substring to search publisher names (case-insensitive).
+                If omitted, returns curated common publishers only.
+        top: Max results to return (default 20).
+
+    Returns JSON with matched publishers and total count.
+    """
+    logger.info(f"Tool called: list_vm_image_publishers({location}, search={search}, top={top})")
+    if not search:
+        # Return curated list without calling Azure API (fast & small)
+        return json.dumps({"total": len(_COMMON_PUBLISHERS), "showing": len(_COMMON_PUBLISHERS), "publishers": _COMMON_PUBLISHERS, "hint": "Use search='keyword' to find more publishers from the full Azure catalog."})
+    # Search the full list from Azure
+    client = _get_client()
+    token = azure_rest.get_access_token(client.tenant_id, client.client_id, client.client_secret)
+    raw = azure_rest.list_vm_image_publishers(client.subscription_id, location, token)
+    # Extract just the name field and filter
+    s = search.lower()
+    matched = [{"name": p.get("name", "")} for p in raw if s in p.get("name", "").lower()]
+    total = len(matched)
+    return json.dumps({"total": total, "showing": min(top, total), "publishers": matched[:top]})
+
+
+@mcp.tool()
+def list_vm_image_offers(location: str, publisher: str, search: str = None, top: int = 25) -> str:
+    """List image offers for a specific publisher in a region.
+
+    Args:
+        location: Azure region name.
+        publisher: Publisher name, e.g. 'Canonical', 'MicrosoftWindowsServer'.
+        search: Optional substring filter on offer name (case-insensitive).
+        top: Max results to return (default 25).
+
+    Returns JSON with offer names and total count.
+    """
+    logger.info(f"Tool called: list_vm_image_offers({location}, {publisher}, search={search})")
+    client = _get_client()
+    token = azure_rest.get_access_token(client.tenant_id, client.client_id, client.client_secret)
+    raw = azure_rest.list_vm_image_offers(client.subscription_id, location, publisher, token)
+    # Extract just the name
+    offers = [{"name": o.get("name", "")} for o in raw]
+    if search:
+        s = search.lower()
+        offers = [o for o in offers if s in o["name"].lower()]
+    total = len(offers)
+    return json.dumps({"total": total, "showing": min(top, total), "offers": offers[:top]})
+
+
+@mcp.tool()
+def list_vm_image_skus(location: str, publisher: str, offer: str, search: str = None, top: int = 25) -> str:
+    """List image SKUs for a specific publisher and offer in a region.
+
+    Args:
+        location: Azure region name.
+        publisher: Publisher name, e.g. 'Canonical'.
+        offer: Offer name, e.g. 'ubuntu-24_04-lts'.
+        search: Optional substring filter on SKU name (case-insensitive).
+        top: Max results to return (default 25).
+
+    Returns JSON with SKU names and total count.
+    """
+    logger.info(f"Tool called: list_vm_image_skus({location}, {publisher}, {offer}, search={search})")
+    client = _get_client()
+    token = azure_rest.get_access_token(client.tenant_id, client.client_id, client.client_secret)
+    raw = azure_rest.list_vm_image_skus(client.subscription_id, location, publisher, offer, token)
+    # Extract just the name
+    skus = [{"name": s.get("name", "")} for s in raw]
+    if search:
+        f = search.lower()
+        skus = [s for s in skus if f in s["name"].lower()]
+    total = len(skus)
+    return json.dumps({"total": total, "showing": min(top, total), "skus": skus[:top]})
+
+
+@mcp.tool()
+def list_disk_types() -> str:
+    """List Azure managed disk types with performance and cost descriptions.
+
+    Returns a static JSON array of the available managed disk SKU types.
+    Use this to help users choose the right disk type for their workload.
+    """
+    logger.info("Tool called: list_disk_types()")
+    disk_types = [
+        {"sku": "Standard_LRS", "name": "Standard HDD (LRS)", "description": "Lowest cost, suitable for backups, dev/test, infrequent access. Up to 500 IOPS."},
+        {"sku": "StandardSSD_LRS", "name": "Standard SSD (LRS)", "description": "Better reliability than HDD, good for web servers, light dev/test. Up to 6,000 IOPS."},
+        {"sku": "Premium_LRS", "name": "Premium SSD (LRS)", "description": "Production workloads, high performance. Up to 20,000 IOPS. Requires VM sizes that support premium storage."},
+        {"sku": "StandardSSD_ZRS", "name": "Standard SSD (ZRS)", "description": "Zone-redundant standard SSD for higher availability across availability zones."},
+        {"sku": "Premium_ZRS", "name": "Premium SSD (ZRS)", "description": "Zone-redundant premium SSD for production workloads requiring zone resiliency."},
+        {"sku": "PremiumV2_LRS", "name": "Premium SSD v2 (LRS)", "description": "Next-gen premium SSD with customizable IOPS/throughput independent of disk size. Up to 80,000 IOPS."},
+        {"sku": "UltraSSD_LRS", "name": "Ultra Disk (LRS)", "description": "Highest performance for IO-intensive workloads (SAP HANA, databases). Up to 160,000 IOPS. Limited region/VM support."},
+    ]
+    return json.dumps(disk_types)
+
+
+# ---------------------------------------------------------------------------
+# Write / deploy / delete tools (require explicit user confirmation)
+# ---------------------------------------------------------------------------
+
 @mcp.tool()
 def deploy_template(resource_group: str, deployment_name: str, template_json: str, parameters_json: str = "{}") -> str:
     """Deploy an ARM template (guarded). Set AZ_RUN_DEPLOY=true to allow.
@@ -232,11 +432,30 @@ def deploy_vm(resource_group: str,
               nic_id: str = None,
               vnet_name: str = "vnet-jack",
               subnet_name: str = "default",
-              no_public_ip: bool = True) -> str:
-    """Create a VM. If `nic_id` is provided, use it; otherwise auto-create NIC (and optional public IP) then create VM.
+              no_public_ip: bool = True,
+              image_publisher: str = "Canonical",
+              image_offer: str = "ubuntu-24_04-lts",
+              image_sku: str = "server",
+              image_version: str = "latest",
+              os_disk_type: str = "Premium_LRS",
+              os_disk_size_gb: int = None,
+              os_type: str = "linux") -> str:
+    """Create a VM with full customization.
 
-    All parameters are passed in from the MCP call. `admin_password` may be omitted if your environment
-    configures password-based authentication differently.
+    If `nic_id` is provided, use it; otherwise auto-create NIC (and optional public IP) then create VM.
+
+    Image parameters (use list_vm_image_publishers/offers/skus to discover valid values):
+        image_publisher: e.g. 'Canonical', 'MicrosoftWindowsServer', 'RedHat'
+        image_offer: e.g. 'ubuntu-24_04-lts', 'WindowsServer', 'RHEL'
+        image_sku: e.g. 'server', '2022-datacenter-g2', '9_4'
+        image_version: e.g. 'latest' or a specific version number
+
+    Disk parameters (use list_disk_types to see options):
+        os_disk_type: Managed disk SKU — Premium_LRS, StandardSSD_LRS, Standard_LRS, etc.
+        os_disk_size_gb: OS disk size in GB. None = Azure default for the image.
+
+    OS type:
+        os_type: 'linux' or 'windows' — controls OS-specific configuration in the VM.
     """
     logger.info(f"Tool called: deploy_vm({resource_group}, {vm_name})")
     client = _get_client()
@@ -247,12 +466,23 @@ def deploy_vm(resource_group: str,
         if not admin_password:
             return json.dumps({"error": "admin_password not provided and AZ_TEST_PASS not set"})
 
+    # Build the image reference from individual parameters
+    image_reference = {
+        "publisher": image_publisher,
+        "offer": image_offer,
+        "sku": image_sku,
+        "version": image_version,
+    }
+
     try:
         # If nic_id supplied, use direct VM create/update
         if nic_id:
             resp = azure_rest.create_or_update_vm(client.subscription_id, resource_group, vm_name, token, nic_id,
                                                   location=location, vm_size=vm_size,
-                                                  admin_username=admin_username, admin_password=admin_password)
+                                                  admin_username=admin_username, admin_password=admin_password,
+                                                  image_reference=image_reference,
+                                                  os_disk_type=os_disk_type, os_disk_size_gb=os_disk_size_gb,
+                                                  os_type=os_type)
             return json.dumps(resp)
 
         # Auto-create NIC (and optional public IP)
@@ -268,7 +498,10 @@ def deploy_vm(resource_group: str,
         # Create VM using direct compute PUT with the new NIC
         resp = azure_rest.create_or_update_vm(client.subscription_id, resource_group, vm_name, token, nic_id_created,
                                               location=location, vm_size=vm_size,
-                                              admin_username=admin_username, admin_password=admin_password)
+                                              admin_username=admin_username, admin_password=admin_password,
+                                              image_reference=image_reference,
+                                              os_disk_type=os_disk_type, os_disk_size_gb=os_disk_size_gb,
+                                              os_type=os_type)
         return json.dumps(resp)
     except Exception as ex:
         return json.dumps({"error": str(ex)})
